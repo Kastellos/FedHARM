@@ -1,10 +1,12 @@
 import gc
 import os
 from typing import List
+import numpy as np
 import torch
 import torchvision
 from torch.utils.data import Dataset
-from torchvision.datasets import CIFAR10, CIFAR100
+from torchvision.datasets import CIFAR10, CIFAR100, MNIST
+import numpy as np
 
 from ffcv.fields import IntField, RGBImageField
 from ffcv.fields.decoders import IntDecoder, SimpleRGBImageDecoder
@@ -16,24 +18,74 @@ from ffcv.transforms import RandomHorizontalFlip, Cutout, \
 from ffcv.transforms.common import Squeeze
 from ffcv.writer import DatasetWriter
 
-def get_cifar10_splited(num_clients, trans, root='/home/kastellosa/PycharmProjects/federated_learning/CVPR_nov_23/data'):
-    trainset = CIFAR10(root=root, train=True, download=True, transform=trans)
+def get_data_iid(dataset_name: str, num_clients: int, transforms, train=True, special_client_size=10000):
+    """
+    Get the dataset splitted to clients in IID setting
 
-    # 2. Shuffle and split indices
-    indices = list(range(len(trainset)))
-    torch.manual_seed(42)  # For reproducibility
-    torch.randperm(len(trainset), out=torch.tensor(indices))
+    @param dataset_name: Name of the dataset
+    @param num_clients: Total number of clients plus one for the shared subset
+    @param transforms: Transformation for the images, different for the train and validation
+    @param train: If the dataset will be for training
+    @param special_client_size: Shared dataset length
+    @return: Indices of each client images and the subsets
+    """
+    if train:
+        if dataset_name == 'cifar10':
+            return get_cifar10_splited_big_common(num_clients=num_clients, trans=transforms,
+                                                  special_client_size=special_client_size)
 
-    split_size = len(trainset) // num_clients
-    client_indices = [indices[i * split_size: (i + 1) * split_size] for i in range(num_clients)]
-    return client_indices, trainset
+        elif dataset_name == 'cifar100':
+            return get_cifar100_splited_big_common(num_clients=num_clients, trans=transforms,
+                                                   special_client_size=special_client_size)
+        elif dataset_name == 'mnist':
+            return get_mnist_splited_big_common(num_clients=num_clients, trans=transforms,
+                                                special_client_size=special_client_size)
+        else:
+            raise Exception("dataset_name must be one of the following 3: cifar10, cifar100, mnist")
+    else:
+        if dataset_name == 'cifar10':
+            return get_cifar10_val(valid_transformations=transforms)
 
-def get_cifar10_val(valid_transformations, root='/home/kastellosa/PycharmProjects/federated_learning/CVPR_nov_23/data'):
-    validset = CIFAR10(root=root, train=False, download=True, transform=valid_transformations)
-    return validset
+        elif dataset_name == 'cifar100':
+            return get_cifar100_val(valid_transformations=transforms)
+        elif dataset_name == 'mnist':
+            return get_mnist_val(valid_transformations=transforms)
+        else:
+            raise Exception("dataset_name must be one of the following 3: cifar10, cifar100, mnist")
+
+def get_data_non_iid(dataset_name: str, num_clients: int, transforms, train=True, special_client_size=10000):
+    """
+        Get the dataset splitted to clients in on-IID setting
+
+        @param dataset_name: Name of the dataset
+        @param num_clients: Total number of clients plus one for the shared subset
+        @param transforms: Transformation for the images, different for the train and validation
+        @param train: If the dataset will be for training
+        @param special_client_size: Shared dataset length
+        @return: Indices of each client images and the subsets
+        """
+
+    if train:
+        if dataset_name == 'cifar10':
+            return get_cifar10_splited_non_iid_big_common(num_clients=num_clients, trans=transforms,
+                                                          special_client_size=special_client_size)
+
+        elif dataset_name == 'cifar100':
+            return get_cifar100_splited_non_iid_big_common(num_clients=num_clients, trans=transforms,
+                                                           special_client_size=special_client_size)
+        else:
+            raise Exception("dataset_name must be one of the following 3: cifar10, cifar100")
+    else:
+        if dataset_name == 'cifar10':
+            return get_cifar10_val(valid_transformations=transforms)
+
+        elif dataset_name == 'cifar100':
+            return get_cifar100_val(valid_transformations=transforms)
+        else:
+            raise Exception("dataset_name must be one of the following 3: cifar10, cifar100")
 
 def get_cifar10_splited_big_common(num_clients, trans,
-                                   root='/home/kastellosa/PycharmProjects/federated_learning/CVPR_nov_23/data',
+                                   root='/home/atpsaltis/Anestis/datasets',
                                    special_client_size=8000):
     special_indices_per_class_from_total = int(special_client_size / 10)
     if num_clients < 2:
@@ -72,30 +124,204 @@ def get_cifar10_splited_big_common(num_clients, trans,
 
     return client_indices, trainset
 
-def get_cifar100_splited(num_clients, trans, root='/home/kastellosa/PycharmProjects/federated_learning/CVPR_nov_23/data'):
-    """
+def get_cifar100_splited_big_common(num_clients, trans,
+                                   root='/home/atpsaltis/Anestis/datasets',
+                                   special_client_size=8000):
+    special_indices_per_class_from_total = int(special_client_size / 10)
+    if num_clients < 2:
+        raise ValueError("Number of clients must be at least 2.")
 
-    @param num_clients: Number of local clients
-    @param trans: Transformations (Only resize of you use FFCV)
-    @param root: Path of the dataset
-    @return:
-        client_indices: Indices of each client
-        trainset: The dataset
-    """
+    # Load the CIFAR10 dataset
     trainset = CIFAR100(root=root, train=True, download=True, transform=trans)
 
-    # 2. Shuffle and split indices
-    indices = list(range(len(trainset)))
-    torch.manual_seed(42)  # For reproducibility
-    torch.randperm(len(trainset), out=torch.tensor(indices))
+    # Shuffle indices
+    indices = torch.randperm(len(trainset)).tolist()
 
-    split_size = len(trainset) // num_clients
-    client_indices = [indices[i * split_size: (i + 1) * split_size] for i in range(num_clients)]
+    # Organize indices by class
+    class_indices = [[] for _ in range(100)]  # CIFAR10 has 10 classes
+    for idx in indices:
+        _, label = trainset[idx]
+        class_indices[label].append(idx)
+
+    # First subset (special client)
+    special_client_indices = []
+    for class_list in class_indices:
+        special_client_indices.extend(class_list[:special_indices_per_class_from_total])
+        del class_list[:special_indices_per_class_from_total]
+
+    # Calculate the number of images per class for the remaining clients
+    remaining_images_per_class = len(class_indices[0])
+    images_per_class_per_client = remaining_images_per_class // (num_clients - 1)
+
+    # Distribute remaining images among other clients
+    client_indices = [special_client_indices]  # Start with the special client
+    for _ in range(num_clients - 1):
+        client_subset = []
+        for class_list in class_indices:
+            client_subset.extend(class_list[:images_per_class_per_client])
+            del class_list[:images_per_class_per_client]
+        client_indices.append(client_subset)
+
     return client_indices, trainset
 
-def get_cifar100_val(valid_transformations, root='/home/kastellosa/PycharmProjects/federated_learning/CVPR_nov_23/data'):
+def get_mnist_val(valid_transformations, root='/home/atpsaltis/Anestis/datasets'):
+    validset = MNIST(root=root, train=False, download=True, transform=valid_transformations)
+    return validset
+
+def get_mnist_splited_big_common(num_clients, trans,
+                                   root='/home/atpsaltis/Anestis/datasets',
+                                   special_client_size=8000):
+    special_indices_per_class_from_total = int(special_client_size / 10)
+    if num_clients < 2:
+        raise ValueError("Number of clients must be at least 2.")
+
+    # Load the CIFAR10 dataset
+    trainset = MNIST(root=root, train=True, download=True, transform=trans)
+
+    # Shuffle indices
+    indices = torch.randperm(len(trainset)).tolist()
+
+    # Organize indices by class
+    class_indices = [[] for _ in range(10)]  # CIFAR10 has 10 classes
+    for idx in indices:
+        _, label = trainset[idx]
+        class_indices[label].append(idx)
+
+    # First subset (special client)
+    special_client_indices = []
+    for class_list in class_indices:
+        special_client_indices.extend(class_list[:special_indices_per_class_from_total])
+        del class_list[:special_indices_per_class_from_total]
+
+    # Calculate the number of images per class for the remaining clients
+    remaining_images_per_class = len(class_indices[0])
+    images_per_class_per_client = remaining_images_per_class // (num_clients - 1)
+
+    # Distribute remaining images among other clients
+    client_indices = [special_client_indices]  # Start with the special client
+    for _ in range(num_clients - 1):
+        client_subset = []
+        for class_list in class_indices:
+            client_subset.extend(class_list[:images_per_class_per_client])
+            del class_list[:images_per_class_per_client]
+        client_indices.append(client_subset)
+
+    return client_indices, trainset
+
+def get_cifar100_val(valid_transformations, root='/home/atpsaltis/Anestis/datasets'):
     validset = CIFAR100(root=root, train=False, download=True, transform=valid_transformations)
     return validset
+
+def get_cifar10_splited_non_iid_big_common(num_clients, trans, alpha, root='/home/atpsaltis/Anestis/datasets', special_client_size=10000):
+    if num_clients < 2:
+        raise ValueError("Number of clients must be exactly 6.")
+
+    # Load the CIFAR100 dataset
+    trainset = CIFAR10(root=root, train=True, download=True, transform=trans)
+
+    # Shuffle indices
+    indices = torch.randperm(len(trainset)).tolist()
+
+    # Organize indices by class
+    class_indices = [[] for _ in range(10)]
+    for idx in indices:
+        _, label = trainset[idx]
+        class_indices[label].append(idx)
+
+    # First subset (special client) -- using an IID approach
+    special_client_indices = []
+    for class_list in class_indices:
+        special_client_indices.extend(class_list[:int(special_client_size / 10)])
+        del class_list[:int(special_client_size / 10)]
+
+    # Calculate the number of images for each of the remaining clients
+    images_per_non_special_client = (50000 - special_client_size) // (num_clients - 1)
+
+    client_indices = [special_client_indices]
+
+    # Distribute remaining images among other clients non-IID
+    for _ in range(num_clients - 1):
+        client_subset = []
+        while len(client_subset) < images_per_non_special_client:
+            # Sample proportions for each class using Dirichlet distribution
+            proportions = np.random.dirichlet([alpha] * 10)
+            # Calculate the number of images to assign based on proportions
+            max_assignable = images_per_non_special_client - len(client_subset)
+            images_distribution = np.floor(proportions * max_assignable).astype(int)
+
+            # Adjust for any small shortfall due to rounding
+            if images_distribution.sum() < max_assignable:
+                shortfall = max_assignable - images_distribution.sum()
+                top_classes = np.argsort(proportions)[-shortfall:]  # Get indices with highest proportions
+                images_distribution[top_classes] += 1  # Distribute shortfall to top classes proportionally
+
+            # Assign images based on distribution
+            for class_idx, num_images in enumerate(images_distribution):
+                if num_images > len(class_indices[class_idx]):
+                    num_images = len(class_indices[class_idx])
+                client_subset.extend(class_indices[class_idx][:num_images])
+                del class_indices[class_idx][:num_images]
+
+        client_indices.append(client_subset)
+
+    return client_indices, trainset
+
+
+def get_cifar100_splited_non_iid_big_common(num_clients, trans, alpha, root='/home/atpsaltis/Anestis/datasets',
+                                            special_client_size=10000):
+    if num_clients < 2:
+        raise ValueError("Number of clients must be exactly 6.")
+
+    # Load the CIFAR100 dataset
+    trainset = CIFAR100(root=root, train=True, download=True, transform=trans)
+
+    # Shuffle indices
+    indices = torch.randperm(len(trainset)).tolist()
+
+    # Organize indices by class
+    class_indices = [[] for _ in range(100)]
+    for idx in indices:
+        _, label = trainset[idx]
+        class_indices[label].append(idx)
+
+    # First subset (special client) -- using an IID approach
+    special_client_indices = []
+    for class_list in class_indices:
+        special_client_indices.extend(class_list[:int(special_client_size / 100)])
+        del class_list[:int(special_client_size / 100)]
+
+    # Calculate the number of images for each of the remaining clients
+    images_per_non_special_client = (50000 - special_client_size) // (num_clients - 1)
+
+    client_indices = [special_client_indices]
+
+    # Distribute remaining images among other clients non-IID
+    for _ in range(num_clients - 1):
+        client_subset = []
+        while len(client_subset) < images_per_non_special_client:
+            # Sample proportions for each class using Dirichlet distribution
+            proportions = np.random.dirichlet([alpha] * 100)
+            # Calculate the number of images to assign based on proportions
+            max_assignable = images_per_non_special_client - len(client_subset)
+            images_distribution = np.floor(proportions * max_assignable).astype(int)
+
+            # Adjust for any small shortfall due to rounding
+            if images_distribution.sum() < max_assignable:
+                shortfall = max_assignable - images_distribution.sum()
+                top_classes = np.argsort(proportions)[-shortfall:]  # Get indices with highest proportions
+                images_distribution[top_classes] += 1  # Distribute shortfall to top classes proportionally
+
+            # Assign images based on distribution
+            for class_idx, num_images in enumerate(images_distribution):
+                if num_images > len(class_indices[class_idx]):
+                    num_images = len(class_indices[class_idx])
+                client_subset.extend(class_indices[class_idx][:num_images])
+                del class_indices[class_idx][:num_images]
+
+        client_indices.append(client_subset)
+
+    return client_indices, trainset
+
 
 class CustomDataset(Dataset):
     def __init__(self, base_dataset, indices):
@@ -112,6 +338,24 @@ class CustomDataset(Dataset):
 
     def __getitem__(self, index):
         return self.base_dataset[self.indices[index]]
+
+class CustomDatasetMNIST(Dataset):
+    def __init__(self, base_dataset, indices):
+        """
+
+        @param base_dataset: Main dataset
+        @param indices: Indices for the federated learning
+        """
+        self.base_dataset = base_dataset
+        self.indices = indices
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, index):
+        image, label = self.base_dataset[self.indices[index]]
+        image = image.convert('RGB')
+        return image, label
 
 class CustomDatasetCommon(Dataset):
     def __init__(self, base_dataset, indices, transforms):
@@ -132,6 +376,28 @@ class CustomDatasetCommon(Dataset):
 
     def __getitem__(self, index):
         image, label = self.base_dataset[self.indices[index]]
+        return self.transforms(image), label, self.image_ids[self.indices[index]]
+
+class CustomDatasetCommonMNIST(Dataset):
+    def __init__(self, base_dataset, indices, transforms):
+        """
+
+        @param base_dataset: Main dataset
+        @param indices: Indices for the federated learning
+        """
+        self.base_dataset = base_dataset
+        self.indices = indices
+        self.transforms = transforms
+        self.id = torch.arange(0, len(self.indices))
+        self.image_ids = {self.indices[i]: self.id[i].item() for i in range(len(self.indices))}
+
+    def __len__(self):
+        return len(self.indices)
+
+
+    def __getitem__(self, index):
+        image, label = self.base_dataset[self.indices[index]]
+        image = image.convert('RGB')
         return self.transforms(image), label, self.image_ids[self.indices[index]]
 
 def ffcv_writer(path, trainsets, validset,):
@@ -271,6 +537,28 @@ class CommonDatasetDataset(Dataset):
     def __getitem__(self, item):
         return self.images[item], self.labels[item]
 
+def sanity_check_distribution(sets):
+    common_subset = sets[0]
+    subsets = sets[1:]
+    common_check = {}
+    subsets_check = []
+    for _ in range(len(subsets)):
+        subsets_check.append({})
+    for batch in common_subset:
+        if batch[1] not in common_check.keys():
+            common_check[batch[1]] = 1
+        else:
+            common_check[batch[1]] += 1
 
+    for i in range(len(subsets)):
+        for batch in subsets[i]:
+            if batch[1] not in subsets_check[i].keys():
+                subsets_check[i][batch[1]] = 1
+            else:
+                subsets_check[i][batch[1]] += 1
+
+    print(f'Common Dataset distribution: {common_check},\n')
+    for i in range(len(subsets_check)):
+        print(f'Subset {i + 1} distribution: {subsets_check[i]}')
 
 
